@@ -20,14 +20,15 @@ SRC = os.path.join(ROOT, "src")
 APP_NAME = "PartyHamsLogger"
 ICON_SVG = os.path.join(SRC, "partyhams", "ui", "assets", "icon.svg")
 
-# Use a platform icon next to this spec if present (icon.icns on macOS, icon.ico
-# on Windows) — see docs/PACKAGING.md for how to generate them from icon.svg.
+# The app-file icon for this platform (icon.icns on macOS, icon.ico on Windows),
+# generated from icon.svg by scripts/make_icons.py. Linux desktop icons come from
+# a .desktop file, not the binary, so PyInstaller's icon arg is unused there.
+_icon_name = {"darwin": "icon.icns", "win32": "icon.ico"}.get(sys.platform)
 icon_file = None
-for cand in ("icon.icns", "icon.ico"):
-    candidate = os.path.join(SPECPATH, cand)  # noqa: F821
+if _icon_name:
+    candidate = os.path.join(SPECPATH, _icon_name)  # noqa: F821
     if os.path.exists(candidate):
         icon_file = candidate
-        break
 
 # Bundle the app icon (loaded at runtime via Path(__file__).parent in ui/style.py)
 # and make sure the self-registering radio/contest backends are pulled in.
