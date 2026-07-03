@@ -57,6 +57,9 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # React 👀 on the issue the moment Claude starts, and keep a live
+          # progress comment (the reaction swaps to ✅/🚀 when it finishes).
+          track_progress: true
           prompt: |
             Investigate this GitHub issue (it was labeled for you). Read the description,
             search the codebase for the relevant code, and identify the likely
@@ -105,4 +108,6 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # React 👀 on the @claude comment so you know it's been picked up.
+          track_progress: true
           claude_args: --max-turns 50 --model claude-opus-4-8 --allowedTools Bash,Edit,Write,Read,Glob,Grep,WebFetch,TodoWrite

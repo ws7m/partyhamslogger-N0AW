@@ -47,27 +47,24 @@ installed), the target stops with instructions instead of failing mid-build.
 
 ## Icons
 
-The app icon is `src/partyhams/ui/assets/icon.svg`. PyInstaller wants a
-platform raster icon; drop one next to the spec and it's picked up automatically:
+The app icon is `src/partyhams/ui/assets/icon.svg`. PyInstaller bakes a platform
+raster icon into the built app *file* (the `.app` in Finder, the `.exe` in
+Explorer) — separate from the in-app window/dock icon, which is loaded from the
+SVG at runtime. The committed platform icons are:
 
-- **Windows:** `packaging/icon.ico`
 - **macOS:** `packaging/icon.icns`
+- **Windows:** `packaging/icon.ico`
 
-Generate them from the SVG, e.g.:
+Regenerate them from the SVG with the project script (uses Qt to rasterize, plus
+`iconutil` for the `.icns` — run it on macOS to refresh both):
 
 ```bash
-# PNG master
-rsvg-convert -w 1024 -h 1024 src/partyhams/ui/assets/icon.svg -o icon-1024.png
-# macOS .icns
-mkdir icon.iconset && for s in 16 32 64 128 256 512 1024; do \
-  sips -z $s $s icon-1024.png --out icon.iconset/icon_${s}x${s}.png; done
-iconset2icns icon.iconset           # or: iconutil -c icns icon.iconset
-# Windows .ico (ImageMagick)
-magick icon-1024.png -define icon:auto-resize=256,128,64,48,32,16 packaging/icon.ico
+python scripts/make_icons.py
 ```
 
-If no platform icon is present the build still succeeds (it just uses the
-default executable icon) and the in-app window icon still comes from the SVG.
+The spec picks the right one per platform automatically. If a platform icon is
+missing the build still succeeds (it just falls back to PyInstaller's default
+executable icon); the in-app window icon always comes from the SVG.
 
 ## Manual build (any platform)
 
