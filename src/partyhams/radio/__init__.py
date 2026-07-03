@@ -13,6 +13,7 @@ from partyhams.radio import flex as _flex  # noqa: F401
 from partyhams.radio import hamlib as _hamlib  # noqa: F401
 from partyhams.radio import icom_civ as _icom  # noqa: F401
 from partyhams.radio import icom_net as _icom_net  # noqa: F401
+from partyhams.radio import icom_tcp as _icom_tcp  # noqa: F401
 from partyhams.radio.base import (
     Capability,
     Radio,

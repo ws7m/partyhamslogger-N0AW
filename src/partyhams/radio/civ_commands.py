@@ -18,16 +18,19 @@ from partyhams.radio.civ_protocol import (
     ACK_NG,
     ACK_OK,
     CIV_ADDR_IC7610,
+    CMD_LEVEL,
     CMD_PTT,
     CMD_READ_FREQ,
     CMD_READ_MODE,
     CMD_SEND_CW,
     CMD_SET_FREQ,
     CMD_SET_MODE,
+    SUB_KEYER_SPEED,
     bcd_to_freq,
     civ_to_mode,
     freq_to_bcd,
     mode_to_civ,
+    wpm_to_level_bytes,
 )
 
 
@@ -49,6 +52,7 @@ class CivRadio(Radio):
             | Capability.RIT_XIT
             | Capability.SPECTRUM
             | Capability.SEND_CW
+            | Capability.KEYER_SPEED
         )
         if self.civ_address == CIV_ADDR_IC7610:
             caps |= Capability.SUB_RECEIVER  # dual receive
@@ -76,7 +80,21 @@ class CivRadio(Radio):
     async def set_ptt(self, on: bool) -> None:
         await self._transact(bytes([CMD_PTT, 0x00, 0x01 if on else 0x00]), ack=True)
 
+    async def set_wpm(self, wpm: int) -> None:
+        # Fire-and-forget — no ACK wait.  Holding the lock for 1.5 s while waiting
+        # for an ACK would block the polling loop and delay freq/mode updates.
+        await self._transact(
+            bytes([CMD_LEVEL, SUB_KEYER_SPEED]) + wpm_to_level_bytes(wpm), expect=False
+        )
+
     async def send_cw(self, text: str, wpm: int | None = None) -> None:
+        if wpm is not None:
+            # Must wait for ACK before sending the CW text — the IC-7300 MK2 TCP
+            # requires strict sequential cmd/response and ignores the CW frame if
+            # two commands arrive back-to-back without a read between them.
+            await self._transact(
+                bytes([CMD_LEVEL, SUB_KEYER_SPEED]) + wpm_to_level_bytes(wpm), ack=True
+            )
         # CI-V "send CW message" (0x17) + ASCII; the radio keys it at its set speed.
         await self._transact(bytes([CMD_SEND_CW]) + text.encode("ascii", "ignore"), expect=False)
 

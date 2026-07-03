@@ -19,12 +19,22 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-# Radio kinds that connect directly to the rig over the network (Icom native LAN).
-_LAN_KINDS = ("icom705-lan", "icom7610-lan", "icom7300mk2-lan")
+# IC-705 / IC-7610: Icom proprietary UDP LAN protocol (requires username + password).
+_UDP_LAN_KINDS = ("icom705-lan", "icom7610-lan")
+# IC-7300 MK2: plain TCP CI-V connection (no username/password).
+_TCP_CIV_LAN_KINDS = ("icom7300mk2-lan",)
+# Combined set used where IP-address entry and a port field are needed.
+_LAN_KINDS = _UDP_LAN_KINDS + _TCP_CIV_LAN_KINDS
+# Radio kinds that use an Icom CI-V serial port.
+_CIV_SERIAL_KINDS = ("icom705", "icom7610", "icom7300mk2")
+_CIV_BAUD_RATES = (4800, 9600, 19200, 38400, 57600, 115200)
+_CIV_DEFAULT_BAUD = 19200
+_ICOM_LAN_DEFAULT_PORT = 50001
 
 
 class _DiscoverWorker(QThread):
@@ -42,18 +52,30 @@ class _DiscoverWorker(QThread):
 
 
 class _VerifyWorker(QThread):
-    """Tests a TCP connection to a radio's control port off the UI thread."""
+    """Tests connectivity to a radio's control port off the UI thread."""
 
     done = Signal(bool, str)
 
-    def __init__(self, host: str, parent=None) -> None:
+    def __init__(self, host: str, kind: str, port: int, parent=None) -> None:
         super().__init__(parent)
         self._host = host
+        self._kind = kind
+        self._port = port
 
     def run(self) -> None:
-        from partyhams.radio.flex import verify_connectivity
-
-        self.done.emit(verify_connectivity(self._host, timeout=2.0), self._host)
+        try:
+            if self._kind in _UDP_LAN_KINDS:
+                from partyhams.radio.icom_net import verify_connectivity
+                ok = verify_connectivity(self._host, self._port, timeout=2.0)
+            elif self._kind in _TCP_CIV_LAN_KINDS:
+                from partyhams.radio.icom_tcp import verify_connectivity
+                ok = verify_connectivity(self._host, self._port, timeout=2.0)
+            else:
+                from partyhams.radio.flex import verify_connectivity
+                ok = verify_connectivity(self._host, timeout=2.0)
+            self.done.emit(ok, self._host)
+        except Exception:  # noqa: BLE001 - discovery never crashes the dialog
+            self.done.emit(False, self._host)
 
 
 class RadioDialog(QDialog):
@@ -76,6 +98,18 @@ class RadioDialog(QDialog):
         self._radio.addItem("Icom IC-7300 MK2 (LAN / Ethernet)", "icom7300mk2-lan")
         self._conn = QLineEdit()
         self._conn.setEnabled(False)
+
+        # CI-V serial baud rate (shown for icom*05 / icom*610 / icom*300mk2 serial kinds).
+        self._baud = QComboBox()
+        for rate in _CIV_BAUD_RATES:
+            self._baud.addItem(str(rate), rate)
+        self._baud.setCurrentIndex(_CIV_BAUD_RATES.index(_CIV_DEFAULT_BAUD))
+
+        # Icom LAN control port (shown for *-lan kinds; Icom default is 50001).
+        self._lan_port = QSpinBox()
+        self._lan_port.setRange(1, 65535)
+        self._lan_port.setValue(_ICOM_LAN_DEFAULT_PORT)
+
         self._user = QLineEdit()
         self._password = QLineEdit()
         self._password.setEchoMode(QLineEdit.EchoMode.Password)
@@ -109,6 +143,11 @@ class RadioDialog(QDialog):
             if idx >= 0:
                 self._radio.setCurrentIndex(idx)
             self._conn.setText(current.get("conn", ""))
+            saved_baud = current.get("baud", _CIV_DEFAULT_BAUD)
+            baud_idx = self._baud.findData(saved_baud)
+            if baud_idx >= 0:
+                self._baud.setCurrentIndex(baud_idx)
+            self._lan_port.setValue(current.get("port", _ICOM_LAN_DEFAULT_PORT))
             self._user.setText(current.get("user", ""))
             self._password.setText(current.get("password", ""))
 
@@ -124,6 +163,8 @@ class RadioDialog(QDialog):
         self._form.addRow("Radio", self._radio)
         self._form.addRow("Discovered", self._flex_row)
         self._form.addRow("Connection", self._conn)
+        self._form.addRow("Baud rate", self._baud)
+        self._form.addRow("Port", self._lan_port)
         self._form.addRow("", self._verify_row)
         self._form.addRow("Username", self._user)
         self._form.addRow("Password", self._password)
@@ -153,22 +194,29 @@ class RadioDialog(QDialog):
     # ------------------------------------------------------------------ #
     def _on_radio_changed(self) -> None:
         kind = self._radio.currentData()
-        is_lan = kind in _LAN_KINDS
+        is_udp_lan = kind in _UDP_LAN_KINDS
+        is_tcp_civ_lan = kind in _TCP_CIV_LAN_KINDS
+        is_civ_serial = kind in _CIV_SERIAL_KINDS
         is_flex = kind == "flex"
-        ip_based = is_flex or is_lan or kind == "hamlib"
+        has_lan_port = is_udp_lan or is_tcp_civ_lan
+        ip_based = is_flex or has_lan_port or kind == "hamlib"
         self._conn.setEnabled(kind != "none")
         self._form.setRowVisible(self._flex_row, is_flex)
+        self._form.setRowVisible(self._baud, is_civ_serial)
+        self._form.setRowVisible(self._lan_port, has_lan_port)
         self._form.setRowVisible(self._verify_row, ip_based)
-        self._form.setRowVisible(self._user, is_lan)
-        self._form.setRowVisible(self._password, is_lan)
+        self._form.setRowVisible(self._user, is_udp_lan)
+        self._form.setRowVisible(self._password, is_udp_lan)
         self._verify_status.setText("")
         if kind == "hamlib":
             self._conn.setPlaceholderText("rigctld host:port (default 127.0.0.1:4532)")
         elif is_flex:
             self._conn.setPlaceholderText("radio IP (blank = auto-discover)")
-        elif kind in ("icom705", "icom7610", "icom7300mk2"):
+        elif is_civ_serial:
             self._conn.setPlaceholderText("serial port (e.g. /dev/cu.usbmodem…)")
-        elif is_lan:
+        elif is_tcp_civ_lan:
+            self._conn.setPlaceholderText("radio IP or hostname")
+        elif is_udp_lan:
             self._conn.setPlaceholderText("radio IP or hostname (Network function must be On)")
         else:
             self._conn.setPlaceholderText("")
@@ -215,9 +263,11 @@ class RadioDialog(QDialog):
             return
         if self._verify_worker is not None and self._verify_worker.isRunning():
             return
+        kind = self._radio.currentData()
+        port = self._lan_port.value() if kind in _LAN_KINDS else 0
         self._verify_btn.setEnabled(False)
         self._verify_status.setText("Checking…")
-        self._verify_worker = _VerifyWorker(host, self)
+        self._verify_worker = _VerifyWorker(host, kind, port, self)
         self._verify_worker.done.connect(self._on_verified)
         self._verify_worker.start()
 
@@ -229,6 +279,8 @@ class RadioDialog(QDialog):
         return {
             "kind": self._radio.currentData(),
             "conn": self._conn.text().strip(),
+            "baud": self._baud.currentData(),
+            "port": self._lan_port.value(),
             "user": self._user.text().strip(),
             "password": self._password.text(),
         }

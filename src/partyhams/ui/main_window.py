@@ -997,12 +997,16 @@ class MainWindow(QMainWindow):
         wpm = clamp_wpm(wpm)
         if wpm == self._macros.cw_wpm:
             self._update_cw_bar()
+            # Still push to radio on an explicit user action (e.g. clicking a preset
+            # button that matches the current value) — the radio may be out of sync.
+            if source == "user" and self._cw_speed_mode != CW_SPEED_RESTORE:
+                self._push_wpm_to_radio(wpm)
             return
         self._macros.cw_wpm = wpm
         save_macros(self.session.contest.id, self._macros)
         self._update_cw_bar()
         self.statusBar().showMessage(f"CW speed {wpm} WPM", 1500)
-        if source == "user" and self._cw_speed_mode == CW_SPEED_SYNC:
+        if source == "user" and self._cw_speed_mode != CW_SPEED_RESTORE:
             self._push_wpm_to_radio(wpm)
 
     def _bump_wpm(self, delta: int) -> None:
@@ -1023,6 +1027,8 @@ class MainWindow(QMainWindow):
         save_macros(self.session.contest.id, self._macros)
         self._update_cw_bar()
         self.statusBar().showMessage(f"Keyboard CW speed {wpm} WPM", 1500)
+        if self._cw_speed_mode != CW_SPEED_RESTORE:
+            self._push_wpm_to_radio(wpm)
 
     def _bump_kbd_wpm(self, delta: int) -> None:
         self._set_kbd_wpm(self._macros.cw_kbd_wpm + delta)
@@ -1360,9 +1366,14 @@ class MainWindow(QMainWindow):
             )
             if restore:
                 await self._send_cw_then_restore(radio, text, wpm)
+            elif self._cw_speed_mode == CW_SPEED_SYNC:
+                # Sync: the radio's speed was already pushed when the spinner changed.
+                # Don't re-assert the macro speed here — that would override a
+                # keyboard-speed change or preset the user just made.
+                await radio.send_cw(text)
+                self._last_commanded_wpm = wpm
             else:
-                # Always / Sync: assert the requested speed on the way out. Remember
-                # it so Sync's follow-the-rig poll doesn't re-adopt our own echo.
+                # Always: explicitly assert the requested speed before each send.
                 await radio.send_cw(text, wpm=wpm)
                 self._last_commanded_wpm = wpm
             if tx_desc is not None:

@@ -180,6 +180,21 @@ class _Stream(asyncio.DatagramProtocol):
             await asyncio.sleep(0.5)
 
 
+def verify_connectivity(host: str, port: int = proto.DEFAULT_CONTROL_PORT,
+                        timeout: float = 2.0) -> bool:
+    """True if the Icom LAN radio at host:port responds to a UDP AreYouThere probe."""
+    pkt = proto.control(proto.TYPE_AREYOUTHERE, 0, 0, 0)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(timeout)
+            sock.sendto(pkt, (host, port))
+            data, _ = sock.recvfrom(256)
+        hdr = proto.parse_header(data)
+        return hdr is not None and hdr.type == proto.TYPE_IAMHERE
+    except OSError:
+        return False
+
+
 @register
 class IcomNet(CivRadio):
     backend_id = "icom-net"

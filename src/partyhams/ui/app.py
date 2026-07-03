@@ -43,6 +43,7 @@ from partyhams.radio.flex import FlexRadio
 from partyhams.radio.hamlib import HamlibRadio
 from partyhams.radio.icom_civ import IcomCIV
 from partyhams.radio.icom_net import IcomNet
+from partyhams.radio.icom_tcp import IcomTCP
 from partyhams.ui.log_dialog import LogDialog
 from partyhams.ui.main_window import MainWindow
 from partyhams.ui.open_log_dialog import OpenLogDialog
@@ -129,20 +130,25 @@ def _poller_from_radio(radio: dict | None) -> RadioPoller | None:
         "icom7610": CIV_ADDR_IC7610,
         "icom7300mk2": CIV_ADDR_IC7300MK2,
     }
-    _civ_lan_addrs = {
+    _civ_udp_lan_addrs = {
         "icom705-lan": CIV_ADDR_IC705,
         "icom7610-lan": CIV_ADDR_IC7610,
-        "icom7300mk2-lan": CIV_ADDR_IC7300MK2,
     }
     if kind in _civ_serial_addrs:  # conn is a serial port path
-        return RadioPoller(IcomCIV(conn, civ_address=_civ_serial_addrs[kind]))
-    if kind in _civ_lan_addrs:  # conn is the radio's IP/hostname
+        baud = int(radio.get("baud", 19200))
+        return RadioPoller(IcomCIV(conn, baud=baud, civ_address=_civ_serial_addrs[kind]))
+    if kind == "icom7300mk2-lan":  # conn is the radio's IP/hostname; TCP CI-V
+        lan_port = int(radio.get("port", 50001))
+        return RadioPoller(IcomTCP(conn, port=lan_port, civ_address=CIV_ADDR_IC7300MK2))
+    if kind in _civ_udp_lan_addrs:  # conn is the radio's IP/hostname; Icom UDP native
+        lan_port = int(radio.get("port", 50001))
         return RadioPoller(
             IcomNet(
                 conn,
                 radio.get("user", ""),
                 radio.get("password", ""),
-                civ_address=_civ_lan_addrs[kind],
+                civ_address=_civ_udp_lan_addrs[kind],
+                control_port=lan_port,
             )
         )
     host, _, port_str = conn.partition(":")

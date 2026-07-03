@@ -26,9 +26,31 @@ CMD_READ_MODE = 0x04
 CMD_SET_FREQ = 0x05
 CMD_SET_MODE = 0x06
 CMD_SEND_CW = 0x17
-CMD_PTT = 0x1C  # subcommand 0x00 = TX/RX
+CMD_PTT = 0x1C       # subcommand 0x00 = TX/RX
+CMD_LEVEL = 0x14     # read/set a level (keyer speed, RF power, …)
+SUB_KEYER_SPEED = 0x0C  # subcommand of CMD_LEVEL for CW keyer WPM
 ACK_OK = 0xFB
 ACK_NG = 0xFA
+
+# Keyer-speed level scale: CI-V maps 0–255 to the radio's physical WPM range.
+# Empirical calibration on IC-7300 MK2: level 85 → 20 WPM, level 113 → 24 WPM.
+# Solving the linear system gives min≈7.86, step≈1/7 WPM/level; rounding to
+# min=8, max=44 reproduces both calibration points to within one level.
+_CIV_WPM_MIN = 8
+_CIV_WPM_MAX = 44
+
+
+def wpm_to_level_bytes(wpm: int) -> bytes:
+    """Encode a WPM value as two BCD bytes for CI-V CMD_LEVEL / SUB_KEYER_SPEED.
+
+    The level is a 0–255 integer that the radio maps linearly to its WPM range
+    (6–60 WPM for IC-7300 family).  It is stored as 4-digit BCD across 2 bytes:
+    e.g. level 104 → b'\x01\x04' (hundreds=01, tens=0, units=4).
+    """
+    level = round(max(0, min(255, (wpm - _CIV_WPM_MIN) * 255 / (_CIV_WPM_MAX - _CIV_WPM_MIN))))
+    b0 = level // 100
+    b1 = ((level % 100) // 10 << 4) | (level % 10)
+    return bytes([b0, b1])
 
 # CI-V mode byte <-> our Mode
 _CIV_TO_MODE: dict[int, Mode] = {
