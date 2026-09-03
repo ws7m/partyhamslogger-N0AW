@@ -23,6 +23,7 @@ from datetime import datetime
 
 from partyhams.core.clock import LamportClock, new_uuid
 from partyhams.core.models import QSO, Mode, utcnow
+from partyhams.hunters.models import HunterRecord
 from partyhams.net.clocksync import clock_offset_seconds, is_clock_off
 from partyhams.net.protocol import (
     Chat,
@@ -30,6 +31,8 @@ from partyhams.net.protocol import (
     FullLogRequest,
     Heartbeat,
     Hello,
+    HunterMessage,
+    HunterSyncResponse,
     Message,
     QsoMessage,
     StationStatus,
@@ -55,6 +58,7 @@ class SyncEngine:
         on_qso: Callable[[QSO], None] | None = None,
         on_status: Callable[[], None] | None = None,
         on_chat: Callable[[Chat, str], None] | None = None,
+        on_hunter: Callable[[HunterRecord], None] | None = None,
         on_clock_off: Callable[[str, float], None] | None = None,
     ) -> None:
         self.transport = transport
@@ -72,6 +76,10 @@ class SyncEngine:
         self.on_chat = on_chat  # (Chat, sender_station_id) for an incoming message
         # All chat we've seen, keyed by uuid (durable + synced like QSOs).
         self.chats: dict[str, Chat] = {}
+        # POTA hunter roster records we've seen, keyed by (call, station_id).
+        # Only populated for a POTA log — see LogSession.
+        self.on_hunter = on_hunter  # a hunter record was applied (persist it)
+        self.hunters: dict[tuple[str, str], HunterRecord] = {}
         # Fired (debounced) when a peer's apparent clock offset crosses the
         # off-threshold: on_clock_off(operator_label, offset_seconds).
         self.on_clock_off = on_clock_off
@@ -283,6 +291,39 @@ class SyncEngine:
         self.chats[chat.uuid] = chat
         return True
 
+    def apply_hunter(self, record: HunterRecord) -> bool:
+        """Merge a hunter record into the in-memory roster (True if it changed).
+
+        Ordering is by ``(lamport, worked_count)`` within a ``(call, station_id)``
+        key. Only the owning station writes its own records, so this is enough to
+        make a re-delivered or reordered datagram a no-op — see
+        :mod:`partyhams.hunters.models` for why the roster is keyed per station.
+        """
+        key = (record.call, record.station_id)
+        existing = self.hunters.get(key)
+        if existing is not None and (record.lamport, record.worked_count) <= (
+            existing.lamport,
+            existing.worked_count,
+        ):
+            return False
+        self.hunters[key] = record
+        return True
+
+    def drop_hunter(self, call: str) -> None:
+        """Forget every in-memory roster record for ``call``.
+
+        Used after a local rename so a peer requesting a full sync is not served
+        the superseded callsign. Purely local: the protocol has no roster
+        tombstone, so a peer that still holds the old record keeps it until it
+        renames too.
+        """
+        for key in [k for k in self.hunters if k[0] == call]:
+            del self.hunters[key]
+
+    async def broadcast_hunter(self, record: HunterRecord) -> None:
+        """Send one already-applied hunter record to peers."""
+        await self.transport.send(HunterMessage(hunter=record))
+
     async def _status_loop(self) -> None:
         while self._running:
             await self.send_status()
@@ -352,6 +393,17 @@ class SyncEngine:
             if is_new and self.on_chat is not None:
                 self.on_chat(message, sender)
 
+        elif isinstance(message, HunterMessage):
+            self.clock.update(message.hunter.lamport)
+            if self.apply_hunter(message.hunter) and self.on_hunter is not None:
+                self.on_hunter(message.hunter)
+
+        elif isinstance(message, HunterSyncResponse):
+            for record in message.hunters:
+                self.clock.update(record.lamport)
+                if self.apply_hunter(record) and self.on_hunter is not None:
+                    self.on_hunter(record)
+
         elif isinstance(message, SyncRequest):
             await self._send_diff(message.high_water)
 
@@ -364,6 +416,11 @@ class SyncEngine:
             # ...and all of our chat, so a (re)joiner ends up with everyone's.
             if self.chats:
                 await self.transport.send(ChatSyncResponse(chats=list(self.chats.values())))
+            # ...and the POTA hunter roster, so a (re)joiner gets everyone's tallies.
+            if self.hunters:
+                await self.transport.send(
+                    HunterSyncResponse(hunters=list(self.hunters.values()))
+                )
 
         elif isinstance(message, ChatSyncResponse):
             for chat in message.chats:

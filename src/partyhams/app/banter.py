@@ -3,9 +3,10 @@
 Given a snapshot of per-station activity (plus the previous snapshot), it decides
 what fun, ham-radio-flavoured automated message to post — cheering a station whose
 rate is climbing, gently ribbing one that's gone quiet, dropping one of a hundred
-terrible puns, or (on Field Day, near the top of the hour) nudging a station about
-the WWV "power hour". It is intentionally Qt-free, randomness-free, and
-wall-clock-free: every decision is a pure function of its inputs (the caller passes
+terrible puns (or, for a station with lines of its own, a personal one), or (on
+Field Day, near the top of the hour) nudging a station about the WWV "power hour".
+It is intentionally Qt-free, randomness-free, and wall-clock-free: every decision
+is a pure function of its inputs (the caller passes
 a monotonically increasing ``counter`` and, for time-aware bits, the current
 minute), so the whole thing is trivially unit-testable.
 
@@ -47,6 +48,9 @@ class StationSnapshot:
     rate_15: int = 0
     total: int = 0
     last_qso_age_min: float | None = None  # None => never worked anyone
+    #: The station callsign, when it differs from ``operator`` (which may hold a
+    #: name). Personal lines are matched against either — see :data:`PERSONAL`.
+    call: str = ""
 
 
 # Cheers for a station whose 15-minute rate just jumped. ``{op}`` => operator.
@@ -86,6 +90,26 @@ WWV_POWER_HOUR = (
     "{op}, WWV power hour incoming. Set your clock, steel your nerves, run that rate!",
     "Calling {op} — ready for the WWV power hour? The ionosphere waits for no one.",
 )
+
+#: How often a fallback post is a personal line rather than a generic pun, when
+#: someone with personal lines is on the network. One in four keeps them a
+#: surprise (~80 minutes apart at the default cooldown) rather than a running gag.
+PERSONAL_EVERY = 4
+
+# Lines aimed at one specific station, keyed by callsign. Used in place of a
+# generic pun while that operator is on the network. ``{op}`` => operator label,
+# though a line addressed to someone by name needs no placeholder.
+PERSONAL: dict[str, tuple[str, ...]] = {
+    "WW8L": (
+        "Tim, are you sure you have paralleled enough generators? "
+        "This could be a long activation!",
+        "Tim, don't forget to rotate the radials before calling CQ parks in the dark...",
+    ),
+    "W8XAL": (
+        "Dave, do you really need to run at 65 WPM? That's kinda fast...",
+    ),
+}
+
 
 # A hundred generic, ham-flavoured one-liners dropped when nothing else is up.
 PUNS = (
@@ -192,6 +216,24 @@ PUNS = (
 )
 
 
+def _personal_lines(named: list[StationSnapshot]) -> list[tuple[str, str]]:
+    """``(template, operator_label)`` for every present station with personal lines.
+
+    Matched on the station call *or* the operator label, since ``operator`` holds
+    a callsign by default but can be set to a name. Sorted so the choice stays
+    deterministic regardless of roster order.
+    """
+    out: list[tuple[str, str]] = []
+    for station in named:
+        for key in (station.call, station.operator):
+            lines = PERSONAL.get(key.strip().upper()) if key else None
+            if lines:
+                out.extend((line, station.operator) for line in lines)
+                break  # a station matched by call must not match again by operator
+    out.sort()
+    return out
+
+
 def _pick(pool: tuple[str, ...], counter: int) -> str:
     """Deterministically pick one item from ``pool`` using ``counter``."""
     return pool[counter % len(pool)]
@@ -248,8 +290,13 @@ def choose_message(
     if idle_op is not None:
         return _say(_pick(SLACKING, counter).format(op=idle_op))
 
-    # (d) Generic pun — the fallback whenever there's someone around to enjoy it.
+    # (d) Fallback whenever there's someone around to enjoy it: a generic pun,
+    #     or — every PERSONAL_EVERY-th time — a line aimed at a specific station.
     if named:
+        personal = _personal_lines(named)
+        if personal and counter % PERSONAL_EVERY == 0:
+            line, op = personal[(counter // PERSONAL_EVERY) % len(personal)]
+            return _say(line.format(op=op))
         return _say(_pick(PUNS, counter))
     return None
 

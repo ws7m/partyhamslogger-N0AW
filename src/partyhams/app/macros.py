@@ -3,6 +3,8 @@
 A macro's CW/digital ``content`` is text with ``{VAR}`` substitutions and inline
 ``{ACTION}`` markers; phone content is a ``.wav`` path. Substitution is N1MM-style
 but uses our ``{NAME}`` syntax (e.g. ``{MYCALL}``, ``{CALL}``, ``{EXCH}``).
+The UI supplies the values; a token with no value expands to empty, which is
+how ``{HUNTERNAME}`` disappears for a station that isn't on the POTA roster.
 
 Each *event* (contest) keeps its own macro set, persisted under
 ``~/.partyhams/macros/<contest_id>.json``; missing files fall back to the
@@ -14,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from partyhams.app.state import APP_DIR
@@ -82,6 +85,29 @@ def cw_duration_seconds(text: str, wpm: int) -> float:
     dot = 1.2 / wpm
     units = max(1, len(text)) * 10
     return units * dot
+
+# Time-of-day greeting boundaries, in **local** minutes past midnight. Everything
+# else in the logger runs on UTC, but a greeting has to match the clock on the
+# operator's wall, so this one deliberately uses local time.
+_AFTERNOON_FROM = 12 * 60  # 12:00 PM
+_EVENING_FROM = 18 * 60 + 1  # 6:01 PM (6:00 PM itself is still afternoon)
+
+
+def greeting_for(when: datetime | None = None) -> str:
+    """The CW greeting for a local wall-clock time: ``GM`` / ``GA`` / ``GE``.
+
+    Morning runs from midnight through 11:59 AM, afternoon from 12:00 PM through
+    6:00 PM, and evening from 6:01 PM through 11:59 PM. ``when`` defaults to the
+    current local time; pass a naive local ``datetime`` to test a boundary.
+    """
+    when = when or datetime.now()
+    minutes = when.hour * 60 + when.minute
+    if minutes < _AFTERNOON_FROM:
+        return "GM"
+    if minutes < _EVENING_FROM:
+        return "GA"
+    return "GE"
+
 
 # Inline markers that trigger an action instead of being sent as text.
 _ACTIONS = {"LOG", "WIPE"}

@@ -52,6 +52,7 @@ from partyhams.app.macros import (
     cw_duration_seconds,
     esm_step,
     expand,
+    greeting_for,
     load_macros,
     normalize_cw_speed_mode,
     normalize_wpm_presets,
@@ -79,7 +80,7 @@ from partyhams.core.models import (
     utcnow,
 )
 from partyhams.export import park_adif_name, timestamped_adif_name
-from partyhams.qrz import QrzClient, format_record
+from partyhams.qrz import QrzClient, format_record, greeting_name
 from partyhams.radio.base import Capability, RadioState
 from partyhams.refdata import RefData
 from partyhams.ui import shortcuts as sc
@@ -268,6 +269,7 @@ class MainWindow(QMainWindow):
         # and run in the background, surfacing results in the status bar.
         self._qrz = QrzClient()
         self._qrz_last_call = ""  # debounce: don't re-look-up the same call
+        self._qrz_record: dict | None = None  # last successful lookup (for the roster)
         #: Set by the app: on_change_qrz(username, password) persists credentials.
         self.on_change_qrz: Callable[[str, str], None] | None = None
         self._qrz_dialog = None  # the QRZ login dialog while open
@@ -490,6 +492,7 @@ class MainWindow(QMainWindow):
         self._qrz.password = password
         self._qrz.key = None
         self._qrz_last_call = ""
+        self._qrz_record = None
 
     def _qrz_enabled(self) -> bool:
         return bool(self._qrz.username and self._qrz.password)
@@ -519,9 +522,52 @@ class MainWindow(QMainWindow):
         if call != self._call.text().strip().upper():
             return  # the operator moved on; don't clobber a newer entry
         if record is not None:
+            self._qrz_record = record  # reused by the POTA roster when this is logged
             self.statusBar().showMessage(format_record(record), 8000)
         elif self._qrz.last_error:
             self.statusBar().showMessage(self._qrz.last_error, 4000)
+
+    # ------------------------------------------------------------------ #
+    # POTA hunter roster: fill in the operator's name from QRZ
+    # ------------------------------------------------------------------ #
+    def _name_hunter(self, call: str) -> None:
+        """Give a newly-rostered POTA hunter a name, once.
+
+        ``record_qso`` has already added or incremented the roster entry. If the
+        debounced entry-window lookup already fetched this call, its name is used
+        for free; otherwise one background lookup is fired. A call is only ever
+        looked up once for this purpose — a station QRZ doesn't know keeps an
+        empty name rather than costing a lookup on every contact.
+        """
+        if not self.session.hunter_needs_name(call):
+            return  # not POTA, not on the roster, or already named
+        cached = self._qrz_record
+        if cached is not None and cached.get("call", "").upper() == call:
+            self._apply_hunter_name(call, greeting_name(cached))
+            return
+        if not self._qrz_enabled() or self._loop is None or not self._loop.is_running():
+            return  # no credentials or no loop -> the name stays empty
+        self._loop.create_task(self._lookup_hunter_name(call))
+
+    async def _lookup_hunter_name(self, call: str) -> None:
+        """One background QRZ lookup purely to name a roster entry."""
+        record = await asyncio.get_event_loop().run_in_executor(None, self._qrz.lookup, call)
+        if record is None:
+            return  # unknown to QRZ or the lookup failed; no retry
+        self._qrz_record = record
+        self._apply_hunter_name(call, greeting_name(record))
+
+    def _apply_hunter_name(self, call: str, name: str) -> None:
+        """Store a resolved name and push it to peers (best-effort)."""
+        if not name or self.session.set_hunter_name(call, name) is None:
+            return
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return  # stored locally; peers pick it up on their next full sync
+        try:
+            loop.create_task(self.session.broadcast_hunters())
+        except Exception:  # noqa: BLE001 - never let the roster disrupt logging
+            pass
 
     # ------------------------------------------------------------------ #
     # update check (periodic, background) + in-app download/install
@@ -787,6 +833,7 @@ class MainWindow(QMainWindow):
                     rate_15=row["rates"][15],
                     total=row["total"],
                     last_qso_age_min=age,
+                    call=row["call"] or "",
                 )
             )
         return snaps
@@ -1197,16 +1244,36 @@ class MainWindow(QMainWindow):
 
     def _macro_context(self) -> dict[str, str]:
         sent = self.session.config.sent_exchange
+        call = self._call.text().strip().upper()
         ctx = {
             "MYCALL": self.session.config.my_call,
-            "CALL": self._call.text().strip().upper(),
+            "CALL": call,
             "EXCH": " ".join(v for v in sent.values() if v),
             "OP": self.session.engine.operator,
             "RST": default_rst(self._current_mode()),
+            # POTA only: the hunter's first name, so a greeting can be personal.
+            # Empty for a station not on the roster, or on any non-POTA log --
+            # expand() collapses the resulting gap, so "TU {HUNTERNAME} 5NN"
+            # keys as "TU 5NN" for a stranger.
+            "HUNTERNAME": self._hunter_name(call),
+            # Time-of-day greeting from the *local* clock (see macros.greeting_for).
+            "GMAE": greeting_for(),
         }
         for name, value in sent.items():
             ctx[name.upper()] = value
         return ctx
+
+    def _hunter_name(self, call: str) -> str:
+        """The rostered first name for ``call``, or "" if we don't know one.
+
+        Upper-cased like every other macro value: CW has no lower case, the rig's
+        keyer is handed this text verbatim, and the live keyboard sender upper-cases
+        too. The roster keeps the name in its natural case for the editor.
+        """
+        if not call:
+            return ""
+        hunter = self.session.hunter(call)
+        return hunter.name.upper() if hunter is not None else ""
 
     def _fire_macro(self, key: int) -> None:
         if key == 1:
@@ -1598,6 +1665,10 @@ class MainWindow(QMainWindow):
         ref_menu.addAction("Import LoTW users…", self._import_lotw)
         ref_menu.addAction("Import eQSL users…", self._import_eqsl)
         ref_menu.addAction("Import QRZ users…", self._import_qrz)
+        tools_menu.addSeparator()
+        tools_menu.addAction("Edit POTA Hunters…", self._edit_hunters).setStatusTip(
+            "View and correct the callsigns and names in the POTA hunter roster"
+        )
         tools_menu.addSeparator()
         tools_menu.addAction(
             "Check for Updates…", lambda: self._check_for_update(force=True)
@@ -2578,6 +2649,7 @@ class MainWindow(QMainWindow):
             call=call, freq_hz=self._current_freq(), mode=self._current_mode(), exchange=parsed
         )
         self._broadcast(qso)
+        self._name_hunter(call)
 
         self._call.clear()
         for edit in self._exchange_edits.values():
@@ -2788,6 +2860,51 @@ class MainWindow(QMainWindow):
         if path:
             Path(path).write_text(self.session.export_fieldday_summary())
             self.statusBar().showMessage(f"Exported Field Day summary to {path}", 4000)
+
+    def _edit_hunters(self) -> None:
+        """Open the POTA hunter roster editor (Tools → Edit POTA Hunters…).
+
+        The roster is install-wide, so it is editable whatever log is open. With
+        a POTA log the edits go through the session, which stamps them with the
+        sync clock and pushes them to peers; otherwise a standalone store is
+        opened just for the dialog and the edits stay local (there is no POTA
+        network to tell).
+        """
+        from partyhams.hunters import HUNTERS_DB, HunterStore
+        from partyhams.ui.hunters_dialog import HuntersDialog
+
+        if self.session.hunters is not None:
+            dialog = HuntersDialog(
+                self.session.hunters_by_worked, self._apply_hunter_edit, self
+            )
+            dialog.exec()
+            return
+        store = HunterStore(HUNTERS_DB)
+        try:
+            HuntersDialog(
+                store.all,
+                lambda old, call, name: store.edit(
+                    old_call=old,
+                    new_call=call,
+                    name=name,
+                    station_id=self.session.engine.station_id,
+                ),
+                self,
+            ).exec()
+        finally:
+            store.close()
+
+    def _apply_hunter_edit(self, old_call: str, call: str, name: str) -> None:
+        """Apply one roster edit and push it to peers (best-effort)."""
+        if not self.session.edit_hunter(old_call, call, name):
+            return
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return  # saved locally; peers pick it up on their next full sync
+        try:
+            loop.create_task(self.session.broadcast_hunters())
+        except Exception:  # noqa: BLE001 - never let the roster disrupt the UI
+            pass
 
     def _edit_qrz(self) -> None:
         from partyhams.ui.qrz_dialog import QrzDialog

@@ -324,6 +324,20 @@ class QrzClient:
         return None
 
 
+def greeting_name(record: dict) -> str:
+    """The single name to greet an operator by, from a QRZ lookup record.
+
+    QRZ's ``fname`` is a free-text field: it is usually just "Tim", but plenty of
+    entries carry a middle name or initial ("Tim J", "Mary Ellen") and a greeting
+    wants only the first word of that. So take the first whitespace-delimited
+    token. Falls back to ``name`` (the surname field) when ``fname`` is empty,
+    which is better than greeting nobody; returns "" when neither is set.
+    """
+    raw = (record.get("first") or record.get("name") or "").strip()
+    parts = raw.split()
+    return parts[0] if parts else ""
+
+
 def format_record(record: dict) -> str:
     """One-line summary for the status bar: ``W1AW — Hiram Maxim, Newington CT``."""
     name = " ".join(p for p in (record.get("first"), record.get("name")) if p)

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from partyhams.core.models import QSO, Mode
+from partyhams.hunters.models import HunterRecord
 
 PROTOCOL_VERSION = 1
 
@@ -63,6 +64,36 @@ def qso_from_wire(d: dict) -> QSO:
         exchange_sent=dict(d["exchange_sent"]),
     )
 
+
+# --------------------------------------------------------------------------- #
+# POTA hunter record <-> wire dict
+# --------------------------------------------------------------------------- #
+def hunter_to_wire(r: HunterRecord) -> dict:
+    return {
+        "call": r.call,
+        "station_id": r.station_id,
+        "name": r.name,
+        "last_worked": r.last_worked.isoformat(),
+        "freq_hz": r.freq_hz,
+        "band": r.band,
+        "mode": r.mode,
+        "worked_count": r.worked_count,
+        "lamport": r.lamport,
+    }
+
+
+def hunter_from_wire(d: dict) -> HunterRecord:
+    return HunterRecord(
+        call=d["call"],
+        station_id=d["station_id"],
+        name=d.get("name", ""),
+        last_worked=datetime.fromisoformat(d["last_worked"]),
+        freq_hz=int(d.get("freq_hz", 0)),
+        band=d.get("band", ""),
+        mode=d.get("mode", ""),
+        worked_count=int(d.get("worked_count", 0)),
+        lamport=int(d.get("lamport", 0)),
+    )
 
 # --------------------------------------------------------------------------- #
 # Messages
@@ -174,6 +205,22 @@ class ChatSyncResponse:
     type: str = "chat_sync_response"
 
 
+@dataclass
+class HunterMessage:
+    """An add/update of one station's POTA hunter-roster record."""
+
+    hunter: HunterRecord
+    type: str = "pota_hunter"
+
+
+@dataclass
+class HunterSyncResponse:
+    """A batch of hunter records answering a :class:`FullLogRequest`."""
+
+    hunters: list[HunterRecord] = field(default_factory=list)
+    type: str = "pota_hunter_sync_response"
+
+
 Message = (
     Hello
     | QsoMessage
@@ -184,6 +231,8 @@ Message = (
     | StationStatus
     | Chat
     | ChatSyncResponse
+    | HunterMessage
+    | HunterSyncResponse
 )
 
 
@@ -247,6 +296,13 @@ def _body_to_dict(msg: Message) -> dict:
         }
     if isinstance(msg, Chat):
         return {"type": "chat", **_chat_to_wire(msg)}
+    if isinstance(msg, HunterMessage):
+        return {"type": "pota_hunter", "hunter": hunter_to_wire(msg.hunter)}
+    if isinstance(msg, HunterSyncResponse):
+        return {
+            "type": "pota_hunter_sync_response",
+            "hunters": [hunter_to_wire(h) for h in msg.hunters],
+        }
     if isinstance(msg, ChatSyncResponse):
         return {
             "type": "chat_sync_response",
@@ -310,6 +366,12 @@ def _body_from_dict(obj: dict) -> Message:
         )
     if t == "chat":
         return _chat_from_wire(obj)
+    if t == "pota_hunter":
+        return HunterMessage(hunter=hunter_from_wire(obj["hunter"]))
+    if t == "pota_hunter_sync_response":
+        return HunterSyncResponse(
+            hunters=[hunter_from_wire(h) for h in obj.get("hunters", [])]
+        )
     if t == "chat_sync_response":
         return ChatSyncResponse(chats=[_chat_from_wire(c) for c in obj.get("chats", [])])
     raise ValueError(f"unknown message type: {t!r}")
