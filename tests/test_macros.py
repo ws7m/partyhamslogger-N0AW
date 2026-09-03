@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from partyhams.app.macros import (
     DEFAULT_WPM,
     WPM_MAX,
@@ -10,6 +12,7 @@ from partyhams.app.macros import (
     bank_key,
     esm_step,
     expand,
+    greeting_for,
     load_macros,
     normalize_wpm_presets,
     save_macros,
@@ -60,6 +63,42 @@ def test_field_day_default_macros():
     assert run[12] == "{WIPE}"
     sp = {m.key: m.content for m in macros["CW.SP"]}
     assert sp[3] == "TU {LOG}"  # S&P gets a briefer TU
+
+
+def test_greeting_morning_from_midnight_to_noon():
+    for hour, minute in ((0, 0), (0, 1), (6, 30), (11, 59)):
+        assert greeting_for(datetime(2026, 9, 3, hour, minute)) == "GM"
+
+
+def test_greeting_afternoon_from_noon_through_six():
+    for hour, minute in ((12, 0), (12, 1), (15, 45), (18, 0)):
+        assert greeting_for(datetime(2026, 9, 3, hour, minute)) == "GA"
+
+
+def test_greeting_evening_from_one_past_six_to_midnight():
+    for hour, minute in ((18, 1), (20, 0), (23, 59)):
+        assert greeting_for(datetime(2026, 9, 3, hour, minute)) == "GE"
+
+
+def test_greeting_boundaries_are_exact():
+    """The two changeover minutes, which is where an off-by-one would hide."""
+    assert greeting_for(datetime(2026, 9, 3, 11, 59)) == "GM"
+    assert greeting_for(datetime(2026, 9, 3, 12, 0)) == "GA"
+    assert greeting_for(datetime(2026, 9, 3, 18, 0)) == "GA"
+    assert greeting_for(datetime(2026, 9, 3, 18, 1)) == "GE"
+
+
+def test_greeting_ignores_seconds_within_a_boundary_minute():
+    assert greeting_for(datetime(2026, 9, 3, 18, 0, 59)) == "GA"
+
+
+def test_greeting_defaults_to_now():
+    assert greeting_for() in {"GM", "GA", "GE"}
+
+
+def test_greeting_expands_in_a_macro():
+    text, _ = expand("{GMAE} {CALL}", {"GMAE": "GA", "CALL": "W1AW"})
+    assert text == "GA W1AW"
 
 
 def test_bank_key():

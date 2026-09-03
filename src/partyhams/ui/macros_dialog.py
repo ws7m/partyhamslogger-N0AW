@@ -20,8 +20,10 @@ from partyhams.app.macros import MacroSet
 from partyhams.contest.base import ContestDefinition, Macro
 
 _HELP = (
-    "CW/digital: text with {MYCALL} {CALL} {EXCH} {RST}, plus {LOG} (log the QSO) "
-    "and {WIPE} (clear entry). Phone: a .wav file path."
+    "CW/digital: text with {MYCALL} {CALL} {EXCH} {RST} {GMAE} (GM/GA/GE by local "
+    "time), plus {LOG} (log the QSO) and {WIPE} (clear entry). In POTA, "
+    "{HUNTERNAME} is the hunter's first name from the roster (empty if they "
+    "aren't on it). Phone: a .wav file path."
 )
 _BANK_LABELS = {
     "CW.RUN": "CW · Run",

@@ -14,6 +14,7 @@ from partyhams.app.state import AppState, load_state, save_state
 from partyhams.qrz import (
     QrzClient,
     format_record,
+    greeting_name,
     login_url,
     lookup_url,
     parse_login,
@@ -347,6 +348,38 @@ def test_format_record_summary():
 
 def test_format_record_minimal():
     assert format_record({"call": "K1ABC"}) == "K1ABC"
+
+
+# --------------------------------------------------------------------------- #
+# greeting_name — the first name to greet a POTA hunter by
+# --------------------------------------------------------------------------- #
+def test_greeting_name_plain_first_name():
+    assert greeting_name({"first": "Tim", "name": "Smith"}) == "Tim"
+
+
+def test_greeting_name_drops_a_middle_initial():
+    assert greeting_name({"first": "Tim J", "name": "Smith"}) == "Tim"
+
+
+def test_greeting_name_drops_a_middle_name():
+    assert greeting_name({"first": "Mary Ellen", "name": "Smith"}) == "Mary"
+
+
+def test_greeting_name_ignores_surrounding_and_repeated_whitespace():
+    assert greeting_name({"first": "  Tim   J. ", "name": "Smith"}) == "Tim"
+
+
+def test_greeting_name_keeps_a_hyphenated_first_name_whole():
+    assert greeting_name({"first": "Mary-Jane", "name": "Smith"}) == "Mary-Jane"
+
+
+def test_greeting_name_falls_back_to_the_surname_field():
+    assert greeting_name({"first": "", "name": "Maxim"}) == "Maxim"
+
+
+def test_greeting_name_empty_when_qrz_has_neither():
+    assert greeting_name({"call": "K1ABC"}) == ""
+    assert greeting_name({"first": "   ", "name": ""}) == ""
 
 
 # --------------------------------------------------------------------------- #
