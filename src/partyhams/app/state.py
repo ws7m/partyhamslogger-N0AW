@@ -72,6 +72,48 @@ class AppState:
     #: Run-ESM partial-call policy. False (default): a "?" in the call field sends
     #: the partial verbatim and holds the QSO. True: ESM runs the exchange anyway.
     esm_send_on_query: bool = False
+    #: One-way UDP log broadcast (Logs → UDP Broadcast…). Announces each logged
+    #: QSO as a WSJT-X-format ADIF datagram so other software on the LAN can pick
+    #: it up. Unrelated to the peer-to-peer sync network, which is per-log.
+    udp_log_enabled: bool = False
+    #: Address to send to: a host, a unicast IP, or a broadcast address.
+    udp_log_host: str = "127.0.0.1"
+    udp_log_port: int = 2237
+
+
+#: Valid TCP/UDP port range for the log-broadcast target.
+PORT_MIN = 1
+PORT_MAX = 65535
+
+
+def clamp_port(value: object, default: int = 2237) -> int:
+    """Coerce a persisted or typed port into 1..65535, falling back to ``default``.
+
+    A hand-edited settings file (or a blank field) must not leave the app trying
+    to send to port 0 or a string.
+    """
+    try:
+        port = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return max(PORT_MIN, min(PORT_MAX, port))
+
+
+def is_valid_host(value: str) -> bool:
+    """True for something usable as a UDP destination.
+
+    Deliberately permissive: an IPv4 address (the common case, including a
+    broadcast address like 192.168.1.255) or a hostname. Rejects only what is
+    obviously unusable — blank, whitespace, or an IPv4-shaped string with an
+    octet out of range, which is almost always a typo rather than a hostname.
+    """
+    host = value.strip()
+    if not host or any(c.isspace() for c in host):
+        return False
+    parts = host.split(".")
+    if len(parts) == 4 and all(p.isdigit() for p in parts):
+        return all(0 <= int(p) <= 255 for p in parts)
+    return True
 
 
 def load_state(path: Path = STATE_FILE) -> AppState:
@@ -101,6 +143,9 @@ def load_state(path: Path = STATE_FILE) -> AppState:
         cw_wpm_presets=[int(v) for v in data.get("cw_wpm_presets", [24, 20])],
         cw_presets_enabled=data.get("cw_presets_enabled", True),
         esm_send_on_query=data.get("esm_send_on_query", False),
+        udp_log_enabled=data.get("udp_log_enabled", False),
+        udp_log_host=data.get("udp_log_host", "127.0.0.1"),
+        udp_log_port=clamp_port(data.get("udp_log_port", 2237)),
     )
 
 
@@ -128,6 +173,9 @@ def save_state(state: AppState, path: Path = STATE_FILE) -> None:
         "cw_wpm_presets": state.cw_wpm_presets,
         "cw_presets_enabled": state.cw_presets_enabled,
         "esm_send_on_query": state.esm_send_on_query,
+        "udp_log_enabled": state.udp_log_enabled,
+        "udp_log_host": state.udp_log_host,
+        "udp_log_port": state.udp_log_port,
     }
     path.write_text(json.dumps(payload, indent=2))
 

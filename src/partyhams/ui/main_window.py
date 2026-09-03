@@ -79,7 +79,7 @@ from partyhams.core.models import (
     mode_group_for,
     utcnow,
 )
-from partyhams.export import park_adif_name, timestamped_adif_name
+from partyhams.export import park_adif_name, qso_to_adif, timestamped_adif_name
 from partyhams.qrz import QrzClient, format_record, greeting_name
 from partyhams.radio.base import Capability, RadioState
 from partyhams.refdata import RefData
@@ -94,6 +94,7 @@ from partyhams.ui.sections_window import SectionsWindow
 from partyhams.ui.shortcuts import ShortcutsDialog
 from partyhams.ui.widgets import make_upper
 from partyhams.ui.wsjtx_panel import WsjtxPanel
+from partyhams.wsjtx.broadcast import LogBroadcaster
 from partyhams.wsjtx.callers import CallerTracker
 from partyhams.wsjtx.convert import (
     map_mode,
@@ -314,6 +315,12 @@ class MainWindow(QMainWindow):
         self._callers_timer.timeout.connect(self._refresh_callers)
         #: Set by the app: on_change_wsjtx(enabled, port, host) persists the choice.
         self.on_change_wsjtx: Callable[[bool, int, str], None] | None = None
+        # One-way UDP log broadcast (Logs → UDP Broadcast…). Off until the app
+        # applies the saved settings; unrelated to the P2P sync network.
+        self._udp_log = LogBroadcaster()
+        self._udp_log_dialog = None  # the settings dialog while open
+        #: Set by the app: on_change_udp_log(enabled, host, port) persists it.
+        self.on_change_udp_log: Callable[[bool, str, int], None] | None = None
         try:
             self._loop = asyncio.get_event_loop()
         except RuntimeError:
@@ -1406,14 +1413,17 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj: object, event: QEvent) -> bool:
         """Space/Tab walk forward through the QSO entry fields, Shift+Tab back.
         The key is consumed (no space is typed); installed on the entry fields in
-        _build_entry_row."""
+        _build_entry_row. Free-text fields keep Space as a space — see
+        :meth:`_space_advances`."""
         if event.type() == QEvent.Type.KeyPress and obj in self._entry_fields:
             key = event.key()
             shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
             if key == Qt.Key.Key_Backtab or (key == Qt.Key.Key_Tab and shift):
                 self._advance_entry_field(obj, -1)
                 return True
-            if key in (Qt.Key.Key_Space, Qt.Key.Key_Tab):
+            if key == Qt.Key.Key_Tab or (
+                key == Qt.Key.Key_Space and self._space_advances(obj)
+            ):
                 self._advance_entry_field(obj, +1)
                 return True
         # Up/Down nudge a CW speed (single-line edits don't use vertical arrows, so
@@ -1430,6 +1440,16 @@ class MainWindow(QMainWindow):
                 self._bump_kbd_wpm(delta)
                 return True
         return super().eventFilter(obj, event)
+
+    def _space_advances(self, field: object) -> bool:
+        """Whether Space should jump out of ``field`` instead of typing a space.
+
+        True for the single-token fields — call, exchange, RST — where Space as a
+        field separator is the whole point of keyboard-first entry. False for
+        free text like the comment, where a swallowed space makes the field
+        unusable; Tab still moves on from there.
+        """
+        return field is not self._comment
 
     def _advance_entry_field(self, current: object, delta: int) -> None:
         """Move focus to the next/previous QSO entry field (no wrap). The target's
@@ -1649,6 +1669,9 @@ class MainWindow(QMainWindow):
             fd_summary = logs_menu.addAction("Export Field Day Summary…", self._export_fd_summary)
             fd_summary.setStatusTip("Summary sheet of figures to enter in the Field Day web app")
         logs_menu.addAction("Auto-export…", self._edit_autoexport)
+        logs_menu.addAction("UDP Broadcast…", self._edit_udp_log).setStatusTip(
+            "Send each logged QSO to another program as a WSJT-X ADIF datagram"
+        )
         logs_menu.addAction("Open Log Folder", self._open_log_folder)
         logs_menu.addSeparator()
         logs_menu.addAction("QRZ Login…", self._edit_qrz)
@@ -1907,6 +1930,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"WSJT-X log error: {exc}", 4000)
             return
         self._broadcast(qso)
+        self._udp_broadcast(qso)
         # We've worked them — drop their caller button.
         if self._callers.remove(msg.dx_call):
             self._refresh_callers()
@@ -2737,6 +2761,7 @@ class MainWindow(QMainWindow):
             comment=self._entry_comment(),
         )
         self._broadcast(qso)
+        self._udp_broadcast(qso)
         self._name_hunter(call)
 
         self._call.clear()
@@ -3036,6 +3061,49 @@ class MainWindow(QMainWindow):
             self._qrz_lookup_now()  # look up the current call right away
         else:
             self.statusBar().showMessage("QRZ lookups disabled", 3000)
+
+    def set_udp_log(self, enabled: bool, host: str, port: int) -> None:
+        """Apply UDP log-broadcast settings (called by the app on startup too)."""
+        self._udp_log.configure(enabled, host, port)
+
+    def _edit_udp_log(self) -> None:
+        from partyhams.ui.udp_log_dialog import UdpLogDialog
+
+        dialog = UdpLogDialog(
+            self._udp_log.enabled, self._udp_log.host, self._udp_log.port, parent=self
+        )
+        self._udp_log_dialog = dialog  # keep alive while open
+        dialog.finished.connect(lambda result: self._udp_log_done(dialog, result))
+        dialog.open()
+
+    def _udp_log_done(self, dialog, result: int) -> None:
+        self._udp_log_dialog = None
+        if result != QDialog.DialogCode.Accepted.value:
+            return
+        enabled, host, port = dialog.settings()
+        self.set_udp_log(enabled, host, port)
+        if self.on_change_udp_log is not None:
+            self.on_change_udp_log(enabled, host, port)
+        where = f" to {host}:{port}" if enabled else ""
+        state = "on" if enabled else "off"
+        self.statusBar().showMessage(f"UDP log broadcast {state}{where}", 3000)
+
+    def _udp_broadcast(self, qso) -> None:
+        """Announce one just-logged QSO over UDP (best-effort, never blocking).
+
+        Called only for QSOs logged *here* — a contact arriving from a sync peer
+        was already broadcast by the station that made it, so rebroadcasting it
+        would multiply every QSO by the number of stations on the network.
+        """
+        if not self._udp_log.enabled:
+            return
+        try:
+            record = qso_to_adif(qso, self.session.config, self.session.contest)
+        except Exception as exc:  # noqa: BLE001 - never let a broadcast break logging
+            self.statusBar().showMessage(f"UDP broadcast skipped ({exc})", 3000)
+            return
+        if not self._udp_log.send(record) and self._udp_log.last_error:
+            self.statusBar().showMessage(self._udp_log.last_error, 4000)
 
     def _edit_autoexport(self) -> None:
         from partyhams.ui.autoexport_dialog import AutoExportDialog

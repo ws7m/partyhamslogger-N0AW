@@ -15,6 +15,11 @@ from partyhams import __version__
 from partyhams.contest.base import ContestConfig, ContestDefinition
 from partyhams.core.models import QSO, Mode
 
+#: The ADIF specification version we claim to emit. Shared with the UDP log
+#: broadcast (:mod:`partyhams.wsjtx.broadcast`) so a file and a datagram never
+#: advertise different versions of the same records.
+ADIF_VERSION = "3.1.4"
+
 
 def timestamped_adif_name(call: str, contest_id: str, when: datetime) -> str:
     """A dated ADIF filename, e.g. ``W7ABC-arrl-field-day-20260607-143012.adi``.
@@ -167,7 +172,7 @@ def write_adif(
     """Render a full ADIF document (header + records) as a string."""
     header_lines = [
         "PartyHams Logger ADIF export",
-        _field("ADIF_VER", "3.1.4"),
+        _field("ADIF_VER", ADIF_VERSION),
         _field("PROGRAMID", "PartyHams"),
         _field("PROGRAMVERSION", __version__),
     ]

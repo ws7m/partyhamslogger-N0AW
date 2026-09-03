@@ -331,3 +331,80 @@ def test_a_blank_comment_is_omitted_from_adif(tmp_path):
     session.record_qso(call="W1AW", freq_hz=FREQ["20m"], mode=Mode.CW, exchange={})
     out = write_adif(session.recent(10), session.config, session.contest)
     assert "COMMENT" not in out
+
+
+# --------------------------------------------------------------------------- #
+# keyboard behavior in the entry row
+# --------------------------------------------------------------------------- #
+def test_space_types_a_space_in_the_comment(tmp_path):
+    """Real keystrokes: the comment is prose, so Space must not jump fields."""
+    from PySide6.QtTest import QTest
+
+    win = window(general_session(tmp_path))
+    win._comment.setFocus()
+    QTest.keyClicks(win._comment, "QRN heavy tonight")
+    assert win._comment.text() == "QRN heavy tonight"
+    # The keystrokes stayed in the comment rather than walking to another field.
+    # (hasFocus() can't be asserted here — nothing truly holds keyboard focus in
+    # a window that was never shown.)
+    assert win._call.text() == ""
+    assert win._rst_sent.text() == "599"  # untouched default
+
+
+def test_space_still_walks_the_single_token_fields(tmp_path):
+    """The keyboard-first flow is unchanged where Space is a field separator."""
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+
+    win = window(general_session(tmp_path))
+    space = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier, " "
+    )
+    # Consumed (advances) in the call and RST boxes...
+    assert win.eventFilter(win._call, space) is True
+    assert win.eventFilter(win._rst_sent, space) is True
+    # ...but passed through to the comment so the space is typed.
+    assert win.eventFilter(win._comment, space) is False
+
+
+def test_tab_still_leaves_the_comment(tmp_path):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+
+    win = window(general_session(tmp_path))
+    tab = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_Tab, Qt.KeyboardModifier.NoModifier, "\t"
+    )
+    assert win.eventFilter(win._comment, tab) is True
+
+
+def test_a_comment_with_spaces_survives_to_the_log_and_adif(tmp_path):
+    from PySide6.QtTest import QTest
+
+    win = window(general_session(tmp_path))
+    win._call.setText("W1AW")
+    win._comment.setFocus()
+    QTest.keyClicks(win._comment, "Ran 5 W to a wet string")
+    win._try_log()
+
+    assert win.session.recent(1)[0].comment == "Ran 5 W to a wet string"
+    out = write_adif(win.session.recent(10), win.session.config, win.session.contest)
+    assert "<COMMENT:23>Ran 5 W to a wet string" in out
+
+
+def test_pota_entry_row_keeps_space_advancing_everywhere(tmp_path):
+    """POTA has no comment box, so every one of its fields still walks on Space."""
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+
+    session = build_session(
+        contest_id="pota", my_call="N0AW", sent_exchange={}, network=None,
+        extra={"park": "US-1234"}, db_path=tmp_path / "p.sqlite",
+        hunters_db=tmp_path / "h.sqlite",
+    )
+    win = window(session)
+    space = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier, " "
+    )
+    for field in win._entry_fields:
+        assert win.eventFilter(field, space) is True

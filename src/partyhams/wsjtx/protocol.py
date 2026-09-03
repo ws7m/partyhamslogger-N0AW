@@ -42,6 +42,7 @@ TYPE_DECODE = 2
 TYPE_CLEAR = 3
 TYPE_REPLY = 4
 TYPE_QSO_LOGGED = 5
+TYPE_LOGGED_ADIF = 12  # an ADIF record for a logged QSO (we *send* this one)
 TYPE_HIGHLIGHT_CALLSIGN = 13
 
 # Julian Day Number for the Unix epoch (1970-01-01). QDateTime stores a Julian
@@ -425,6 +426,36 @@ def encode_highlight_callsign(
     w.qcolor(background)
     w.qcolor(foreground)
     w.boolean(highlight_last)
+    return w.getvalue()
+
+
+def encode_logged_adif(id: str, adif: str, *, schema: int = 2) -> bytes:
+    """Build a ``LoggedADIF`` (type 12) datagram carrying one ADIF record.
+
+    This is the message WSJT-X emits when it logs a QSO, and the one third-party
+    loggers and mappers (GridTracker, Log4OM, N3FJP, …) listen for. We *send* it
+    rather than parse it, so the whole log can be mirrored to another program on
+    the LAN — see :mod:`partyhams.wsjtx.broadcast`.
+
+    Layout, matching the reference implementation byte for byte::
+
+        0..3    ad bc cb da   magic
+        4..7    00 00 00 02   schema (2)
+        8..11   00 00 00 0c   message type (12 = LoggedADIF)
+        12..15  00 00 00 06   length of the id string
+        16..21  "WSJT-X"      id (identifies us to the receiver)
+        22..25  <u32>         length of the ADIF payload, in bytes
+        26..    <payload>     the ADIF text
+
+    The payload length at 22..25 is **computed** from ``adif``. A fixed value
+    there only holds for one exact record; anything longer is truncated by a
+    conforming reader and anything shorter leaves it waiting on bytes that never
+    arrive.
+    """
+    w = _Writer()
+    w.u32(MAGIC).u32(schema).u32(TYPE_LOGGED_ADIF)
+    w.utf8(id)
+    w.utf8(adif)
     return w.getvalue()
 
 

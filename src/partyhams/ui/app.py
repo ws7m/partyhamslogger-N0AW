@@ -307,6 +307,10 @@ def run() -> int:
             )
             window.on_change_wsjtx = _change_wsjtx
             window.set_wsjtx(state.wsjtx_enabled, state.wsjtx_port, state.wsjtx_host)
+            window.on_change_udp_log = _change_udp_log
+            window.set_udp_log(
+                state.udp_log_enabled, state.udp_log_host, state.udp_log_port
+            )
             window.on_change_qrz = _change_qrz
             window.set_qrz_credentials(state.qrz_username, state.qrz_password)
             window.on_change_auto_update = _change_auto_update
@@ -433,6 +437,13 @@ def run() -> int:
         state.wsjtx_enabled = enabled
         state.wsjtx_port = port
         state.wsjtx_host = host
+        save_state(state)
+
+    # --- UDP log broadcast (persisted) ---
+    def _change_udp_log(enabled: bool, host: str, port: int) -> None:
+        state.udp_log_enabled = enabled
+        state.udp_log_host = host
+        state.udp_log_port = port
         save_state(state)
 
     # --- QRZ credentials (persisted) ---
