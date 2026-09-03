@@ -31,6 +31,10 @@ from partyhams.net.transport import MulticastTransport, NullTransport
 
 RATE_WINDOWS_MIN = (15, 30, 60)  # QSO-rate windows shown in the network panel
 
+#: Contests that keep a hunter roster (see :mod:`partyhams.hunters`). Both are
+#: casual, callsign-and-name activities where you work the same people again.
+ROSTER_CONTESTS: frozenset[str] = frozenset({"pota", "general"})
+
 # Presence thresholds (seconds since a peer's last StationStatus). A station
 # broadcasts status every 3s, so "stale" dims it after a few missed beats,
 # "silent" flags it as probably-gone after two minutes, and "gone" strikes it
@@ -59,9 +63,12 @@ class LogSession:
         self.config = config
         self.engine = engine
         self.store = store
-        #: POTA hunter roster (None for any non-POTA contest — see
-        #: :mod:`partyhams.hunters`). Populated as QSOs are logged.
-        self.hunters = hunters if contest.id == "pota" else None
+        #: Hunter roster (None for contests that don't use one — see
+        #: :mod:`partyhams.hunters`). Populated as QSOs are logged. POTA fills it
+        #: with the regulars who hunt the activation; General logging shares the
+        #: same roster so an everyday contact with someone you met at a park keeps
+        #: their name and count in one place. Field Day has no use for it.
+        self.hunters = hunters if contest.id in ROSTER_CONTESTS else None
         self._listeners: list[Callable[[], None]] = []
         self._roster_listeners: list[Callable[[], None]] = []
         self._chat_listeners: list[Callable[[dict], None]] = []
@@ -461,6 +468,7 @@ class LogSession:
         rst_rcvd: str = "599",
         timestamp: datetime | None = None,
         uuid: str | None = None,
+        comment: str = "",
     ) -> QSO:
         """Log a QSO locally and synchronously (UI updates immediately).
 
@@ -482,6 +490,7 @@ class LogSession:
             rst_rcvd=rr,
             timestamp=timestamp,
             uuid=uuid,
+            comment=comment,
         )
         self._note_hunter(qso)
         return qso
@@ -502,6 +511,7 @@ class LogSession:
         rst_sent: str | None = None,
         rst_rcvd: str | None = None,
         timestamp: datetime | None = None,
+        comment: str | None = None,
     ) -> QSO:
         """Edit a QSO's details in place (same uuid, fresh lamport). Returns the
         amended QSO; broadcast it with :meth:`broadcast`."""
@@ -519,6 +529,7 @@ class LogSession:
             rst_sent=rs,
             rst_rcvd=rr,
             timestamp=timestamp or qso.timestamp,
+            comment=qso.comment if comment is None else comment,
             deleted=False,
         )
         return self.engine.amend(amended)
@@ -828,7 +839,7 @@ def _assemble(
     # log so no other contest pays for it (LogSession also gates on contest.id).
     hunters = (
         HunterStore(hunters_db)
-        if hunters_db is not None and contest.id == "pota"
+        if hunters_db is not None and contest.id in ROSTER_CONTESTS
         else None
     )
     return LogSession(

@@ -154,6 +154,8 @@ def qso_to_adif(qso: QSO, config: ContestConfig, contest: ContestDefinition | No
     grid = str(qso.exchange_rcvd.get("grid", "") or "").strip()
     if grid:
         parts.append(_field("GRIDSQUARE", grid))
+    if qso.comment.strip():
+        parts.append(_field("COMMENT", qso.comment.strip()))
     return "".join(parts) + "<EOR>"
 
 

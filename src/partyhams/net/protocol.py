@@ -42,6 +42,7 @@ def qso_to_wire(qso: QSO) -> dict:
         "serial_sent": qso.serial_sent,
         "exchange_rcvd": qso.exchange_rcvd,
         "exchange_sent": qso.exchange_sent,
+        "comment": qso.comment,
     }
 
 
@@ -62,6 +63,7 @@ def qso_from_wire(d: dict) -> QSO:
         serial_sent=d["serial_sent"],
         exchange_rcvd=dict(d["exchange_rcvd"]),
         exchange_sent=dict(d["exchange_sent"]),
+        comment=d.get("comment", ""),  # older peers omit it
     )
 
 

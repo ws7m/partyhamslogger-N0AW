@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS qso (
     rst_rcvd       TEXT NOT NULL DEFAULT '',
     serial_sent    INTEGER,
     exchange_rcvd  TEXT NOT NULL DEFAULT '{}',
-    exchange_sent  TEXT NOT NULL DEFAULT '{}'
+    exchange_sent  TEXT NOT NULL DEFAULT '{}',
+    comment        TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_qso_call ON qso(call);
 CREATE INDEX IF NOT EXISTS idx_qso_station ON qso(station_id);
@@ -65,13 +66,21 @@ class SqliteLog:
         self._migrate()
         self._conn.commit()
 
+    #: Columns added to ``qso`` after the first release, as ``name -> DDL``. Each
+    #: is appended to an older log file on open; the defaults make an upgraded log
+    #: read identically to a fresh one. Add new columns here rather than writing
+    #: another bespoke ALTER.
+    _ADDED_COLUMNS = {
+        "station_callsign": "TEXT NOT NULL DEFAULT ''",
+        "comment": "TEXT NOT NULL DEFAULT ''",
+    }
+
     def _migrate(self) -> None:
         """Add columns introduced after a log file was first created."""
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(qso)")}
-        if "station_callsign" not in cols:
-            self._conn.execute(
-                "ALTER TABLE qso ADD COLUMN station_callsign TEXT NOT NULL DEFAULT ''"
-            )
+        for name, ddl in self._ADDED_COLUMNS.items():
+            if name not in cols:
+                self._conn.execute(f"ALTER TABLE qso ADD COLUMN {name} {ddl}")
 
     def close(self) -> None:
         self._conn.close()
@@ -105,10 +114,12 @@ class SqliteLog:
             """
             INSERT INTO qso (uuid, station_id, operator, station_callsign, lamport,
                              deleted, call, timestamp, freq_hz, mode, rst_sent,
-                             rst_rcvd, serial_sent, exchange_rcvd, exchange_sent)
+                             rst_rcvd, serial_sent, exchange_rcvd, exchange_sent,
+                             comment)
             VALUES (:uuid, :station_id, :operator, :station_callsign, :lamport,
                     :deleted, :call, :timestamp, :freq_hz, :mode, :rst_sent,
-                    :rst_rcvd, :serial_sent, :exchange_rcvd, :exchange_sent)
+                    :rst_rcvd, :serial_sent, :exchange_rcvd, :exchange_sent,
+                    :comment)
             ON CONFLICT(uuid) DO UPDATE SET
                 station_id=excluded.station_id, operator=excluded.operator,
                 station_callsign=excluded.station_callsign,
@@ -118,7 +129,8 @@ class SqliteLog:
                 rst_sent=excluded.rst_sent, rst_rcvd=excluded.rst_rcvd,
                 serial_sent=excluded.serial_sent,
                 exchange_rcvd=excluded.exchange_rcvd,
-                exchange_sent=excluded.exchange_sent
+                exchange_sent=excluded.exchange_sent,
+                comment=excluded.comment
             """,
             self._to_row(qso),
         )
@@ -182,6 +194,7 @@ class SqliteLog:
             "serial_sent": q.serial_sent,
             "exchange_rcvd": json.dumps(q.exchange_rcvd),
             "exchange_sent": json.dumps(q.exchange_sent),
+            "comment": q.comment,
         }
 
     @staticmethod
@@ -202,4 +215,5 @@ class SqliteLog:
             serial_sent=r["serial_sent"],
             exchange_rcvd=json.loads(r["exchange_rcvd"]),
             exchange_sent=json.loads(r["exchange_sent"]),
+            comment=r["comment"],
         )

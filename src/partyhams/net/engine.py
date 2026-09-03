@@ -157,6 +157,7 @@ class SyncEngine:
         rst_rcvd: str = "599",
         timestamp: datetime | None = None,
         uuid: str | None = None,
+        comment: str = "",
     ) -> QSO:
         """Create + store a new QSO locally (synchronous, no network).
 
@@ -179,6 +180,7 @@ class SyncEngine:
             rst_sent=rst_sent,
             rst_rcvd=rst_rcvd,
             exchange_rcvd=exchange_rcvd or {},
+            comment=comment,
             **when,
         )
         self.log.apply(qso)

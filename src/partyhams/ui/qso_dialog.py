@@ -99,6 +99,12 @@ class QsoEditDialog(QDialog):
 
         form.addRow("Time (UTC)", self._time)
 
+        # Free-text note, for the contests that collect one (General logging).
+        self._comment: QLineEdit | None = None
+        if session.contest.id == "general":
+            self._comment = QLineEdit(qso.comment)
+            form.addRow("Comment", self._comment)
+
         # Validation problems (invalid section/class, missing call) shown on Save.
         self._error = QLabel()
         self._error.setStyleSheet(f"color: {style.DUPE}; font-weight: bold;")
@@ -166,4 +172,6 @@ class QsoEditDialog(QDialog):
         if self._rst_sent is not None and self._rst_rcvd is not None:
             out["rst_sent"] = self._rst_sent.text().strip()
             out["rst_rcvd"] = self._rst_rcvd.text().strip()
+        if self._comment is not None:
+            out["comment"] = self._comment.text().strip()
         return out

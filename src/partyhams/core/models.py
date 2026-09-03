@@ -137,6 +137,10 @@ class QSO:
     # Free-form per-contest exchange data, e.g. {"class": "3A", "section": "OR"}.
     exchange_rcvd: dict[str, str] = field(default_factory=dict)
     exchange_sent: dict[str, str] = field(default_factory=dict)
+    #: Free-text operator note about the contact (ADIF ``COMMENT``). Entered in
+    #: General logs; blank everywhere else, and on every QSO logged before the
+    #: field existed.
+    comment: str = ""
 
     @property
     def band(self) -> Band | None:

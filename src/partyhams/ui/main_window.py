@@ -338,6 +338,8 @@ class MainWindow(QMainWindow):
         if session.contest.exchanges_rst:
             self._columns += ["RST S", "RST R"]
         self._columns += ["Exchange", "Op"]
+        if session.contest.id == "general":
+            self._columns.append("Comment")
 
         # Frequency readout (live from CAT when a radio is connected). Lives in the
         # status bar; created here because building the entry row triggers an early
@@ -1248,6 +1250,34 @@ class MainWindow(QMainWindow):
         self._cw_keyboard.clear()
         self._cw_kbd_sent = ""
 
+    def _reset_rst_fields(self) -> None:
+        """Put the current mode's default report back in the RST boxes.
+
+        Called when the row is built, after each QSO is logged, and on a wipe, so
+        the operator only types a report when it isn't the usual 599/59.
+        """
+        if self._rst_sent is None or self._rst_rcvd is None:
+            return
+        default = default_rst(self._current_mode())
+        self._rst_sent.setText(default)
+        self._rst_rcvd.setText(default)
+
+    def _entry_rst(self) -> tuple[str | None, str]:
+        """``(rst_sent, rst_rcvd)`` from the entry row, falling back to defaults.
+
+        An emptied box means "the usual report" rather than a blank one, so a
+        cleared field can never silently log an empty RST. ``None`` for sent lets
+        the session pick the mode default.
+        """
+        if self._rst_sent is None or self._rst_rcvd is None:
+            return None, default_rst(self._current_mode())
+        default = default_rst(self._current_mode())
+        return (self._rst_sent.text().strip() or None, self._rst_rcvd.text().strip() or default)
+
+    def _entry_comment(self) -> str:
+        """The free-text comment from the entry row ("" when there is no box)."""
+        return self._comment.text().strip() if self._comment is not None else ""
+
     def _macro_context(self) -> dict[str, str]:
         sent = self.session.config.sent_exchange
         call = self._call.text().strip().upper()
@@ -1517,6 +1547,9 @@ class MainWindow(QMainWindow):
         self._call.clear()
         for edit in self._exchange_edits.values():
             edit.clear()
+        if self._comment is not None:
+            self._comment.clear()
+        self._reset_rst_fields()
         self._call.setFocus()
 
     def _open_log_folder(self) -> None:
@@ -2349,10 +2382,43 @@ class MainWindow(QMainWindow):
             hbox.addWidget(QLabel(field.label))
             hbox.addWidget(edit)
 
+        # Signal report, for contests that exchange one (General, POTA). Field Day
+        # exchanges no RST, so these are never built there. Pre-filled with the
+        # mode's default so the common case needs no typing.
+        self._rst_sent: QLineEdit | None = None
+        self._rst_rcvd: QLineEdit | None = None
+        if self.session.contest.exchanges_rst:
+            for attr, label in (("_rst_sent", "RST S"), ("_rst_rcvd", "RST R")):
+                edit = QLineEdit()
+                edit.setMinimumWidth(48)
+                edit.setMaximumWidth(64)
+                edit.setPlaceholderText(label)
+                edit.returnPressed.connect(self._on_enter)
+                setattr(self, attr, edit)
+                hbox.addWidget(QLabel(label))
+                hbox.addWidget(edit)
+            # Filled in at the end of this method — _current_mode() needs the
+            # mode combo, which is built further down.
+
+        # Free-text note about the contact — General logging only, where there is
+        # no exchange competing for the width. Never upper-cased: it's prose.
+        self._comment: QLineEdit | None = None
+        if self.session.contest.id == "general":
+            self._comment = QLineEdit()
+            self._comment.setMinimumWidth(160)
+            self._comment.setPlaceholderText("Comment")
+            self._comment.returnPressed.connect(self._on_enter)
+            hbox.addWidget(QLabel("Comment"))
+            hbox.addWidget(self._comment, 1)
+
         # Keyboard-first entry: Space/Tab walk forward through call -> exchange
-        # fields, Shift+Tab back. Handled in eventFilter (which consumes the key so
-        # no space is inserted) — see _advance_entry_field.
-        self._entry_fields: list[QLineEdit] = [self._call, *self._exchange_edits.values()]
+        # fields -> RST -> comment, Shift+Tab back. Handled in eventFilter (which
+        # consumes the key so no space is inserted) — see _advance_entry_field.
+        self._entry_fields: list[QLineEdit] = [
+            self._call,
+            *self._exchange_edits.values(),
+            *[e for e in (self._rst_sent, self._rst_rcvd, self._comment) if e is not None],
+        ]
         for f in self._entry_fields:
             f.installEventFilter(self)
 
@@ -2374,6 +2440,8 @@ class MainWindow(QMainWindow):
         for mode in _ENTRY_MODES:
             self._mode.addItem(mode.value, mode)
         self._mode.currentIndexChanged.connect(lambda *_: self._refresh_indicators())
+        # CW's 599 vs phone's 59: follow the mode unless the operator has typed.
+        self._mode.currentIndexChanged.connect(lambda *_: self._reset_rst_fields())
         self._mode_label = QLabel("Mode")
         hbox.addWidget(self._mode_label)
         hbox.addWidget(self._mode)
@@ -2389,6 +2457,8 @@ class MainWindow(QMainWindow):
         hbox.addWidget(self._esm_badge)
 
         hbox.addStretch(1)
+        # Now that the mode combo exists, seed the RST boxes with its default.
+        self._reset_rst_fields()
         return row
 
     def _build_log_table(self) -> QTableWidget:
@@ -2656,8 +2726,15 @@ class MainWindow(QMainWindow):
 
         # Record locally and synchronously so the log updates instantly, then
         # broadcast to peers as a best-effort side effect (offline = no-op).
+        rst_sent, rst_rcvd = self._entry_rst()
         qso = self.session.record_qso(
-            call=call, freq_hz=self._current_freq(), mode=self._current_mode(), exchange=parsed
+            call=call,
+            freq_hz=self._current_freq(),
+            mode=self._current_mode(),
+            exchange=parsed,
+            rst_sent=rst_sent,
+            rst_rcvd=rst_rcvd,
+            comment=self._entry_comment(),
         )
         self._broadcast(qso)
         self._name_hunter(call)
@@ -2665,6 +2742,9 @@ class MainWindow(QMainWindow):
         self._call.clear()
         for edit in self._exchange_edits.values():
             edit.clear()
+        if self._comment is not None:
+            self._comment.clear()
+        self._reset_rst_fields()
         self._call.setFocus()
         self.statusBar().showMessage(f"Logged {call}", 2500)
 
@@ -2721,6 +2801,8 @@ class MainWindow(QMainWindow):
             if self.session.contest.exchanges_rst:
                 values += [q.rst_sent, q.rst_rcvd]
             values += [exchange.strip(), q.operator]
+            if self.session.contest.id == "general":
+                values.append(q.comment)
             # White = this operator's own QSOs; blue = another operator's. Keyed on
             # the (persisted) operator call so it stays correct after a reopen.
             is_peer = q.operator.upper() != current_op
